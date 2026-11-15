@@ -1,0 +1,153 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OotleEscrow — walletless demo</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { font-family: system-ui, sans-serif; max-width: 880px; margin: 2rem auto; padding: 0 1rem; line-height: 1.45; }
+  .banner { border: 2px dashed #b58900; padding: .6rem 1rem; border-radius: 8px; font-weight: 600; }
+  fieldset { border: 1px solid #8884; border-radius: 8px; margin: 1rem 0; }
+  legend { font-weight: 700; }
+  button { margin: .15rem; padding: .45rem .8rem; border-radius: 6px; cursor: pointer; }
+  button:disabled { opacity: .45; cursor: not-allowed; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 1rem; }
+  .card { border: 1px solid #8884; border-radius: 8px; padding: .8rem 1rem; }
+  .card h3 { margin-top: 0; }
+  .status { font-size: 1.15rem; font-weight: 700; }
+  #log { background: #8881; border-radius: 8px; padding: .8rem 1rem; white-space: pre-wrap; font-family: ui-monospace, monospace; font-size: .85rem; max-height: 320px; overflow-y: auto; }
+  .err { color: #c0392b; font-weight: 600; }
+  .ok { color: #1e8449; }
+  label { display: block; margin: .3rem 0; }
+  input[type="number"] { width: 7rem; }
+  .map { font-family: ui-monospace, monospace; font-size: .8rem; color: #888; }
+</style>
+</head>
+<body>
+<h1>OotleEscrow — trust-minimized escrow for P2P trades</h1>
+<p class="banner">DEMO MODE — walletless simulation. No wallet, no funds, no chain.
+The state machine below mirrors the Ootle template in <code>src/lib.rs</code> rule-for-rule
+(same methods, same rejection messages; pinned by the parity tests in <code>demo/parity.test.mjs</code>).</p>
+
+<p><strong>The trade:</strong> the buyer pays <strong>1,000 XTM</strong> for an item the seller
+ships off-chain. A named arbitrator can settle disputes. If the trade is still open at
+<strong>epoch 100</strong>, the buyer can reclaim the payment.</p>
+
+<fieldset>
+  <legend>Act as</legend>
+  <label><input type="radio" name="actor" value="buyer-key" checked> Buyer (funds, releases, can dispute)</label>
+  <label><input type="radio" name="actor" value="seller-key"> Seller (delivers off-chain, can refund or dispute)</label>
+  <label><input type="radio" name="actor" value="arbitrator-key"> Arbitrator (only resolves disputes)</label>
+  <label><input type="radio" name="actor" value="stranger-key"> Stranger (no role — try anything, it should fail)</label>
+  <label>Simulated chain epoch: <input type="number" id="epoch" value="10" min="0"> (deadline is 100)</label>
+</fieldset>
+
+<div class="grid">
+  <div class="card">
+    <h3>Escrow state</h3>
+    <div class="status" id="status">—</div>
+    <div>Vault balance: <span id="vault">—</span> XTM</div>
+    <div>Paid to buyer: <span id="paidBuyer">0</span> XTM · Paid to seller: <span id="paidSeller">0</span> XTM</div>
+    <div><button id="reset">↺ Reset demo</button></div>
+  </div>
+  <div class="card">
+    <h3>Actions</h3>
+    <button data-act="fund">Fund 1,000 XTM</button>
+    <button data-act="release">Release to seller</button>
+    <button data-act="refund">Seller refund</button>
+    <button data-act="timeout">Claim timeout refund</button>
+    <button data-act="dispute">Open dispute</button>
+    <button data-act="resolveSeller">Resolve → seller</button>
+    <button data-act="resolveBuyer">Resolve → buyer</button>
+    <p class="map">Each button calls the template method of the same name;
+    the log shows the Ootle transaction it maps to and the engine event it emits.</p>
+  </div>
+</div>
+
+<h2>Walkthroughs (≈3 min)</h2>
+<ol>
+  <li><strong>Happy path:</strong> as Buyer → <em>Fund</em>, then <em>Release</em>. The seller is paid in full.</li>
+  <li><strong>Wrong signer:</strong> Reset, act as Seller → <em>Fund</em> is rejected (“Only the buyer can fund the escrow”).</li>
+  <li><strong>Dispute:</strong> Reset, as Buyer → <em>Fund</em>; as Seller → <em>Open dispute</em>;
+      try <em>Release</em> (locked out); as Arbitrator → <em>Resolve → buyer</em>.</li>
+  <li><strong>Timeout:</strong> Reset, as Buyer → <em>Fund</em>; set epoch to 100 → <em>Claim timeout refund</em>.</li>
+</ol>
+
+<h2>Log</h2>
+<div id="log"></div>
+
+<script type="module">
+import { TradeEscrow, EscrowError } from "./escrow.js";
+
+const BUYER = "buyer-key", SELLER = "seller-key";
+let trade, epoch = 10;
+
+const $ = (id) => document.getElementById(id);
+const logEl = $("log");
+
+function log(text, cls = "") {
+  const div = document.createElement("div");
+  if (cls) div.className = cls;
+  div.textContent = text;
+  logEl.prepend(div);
+}
+
+function render() {
+  const info = trade.info();
+  $("status").textContent = info.status;
+  $("vault").textContent = info.vaultBalance;
+  $("paidBuyer").textContent = trade.paidTo[BUYER];
+  $("paidSeller").textContent = trade.paidTo[SELLER];
+}
+
+function reset() {
+  epoch = Number($("epoch").value) || 0;
+  trade = new TradeEscrow({
+    buyer: BUYER, seller: SELLER, arbitrator: "arbitrator-key",
+    buyerAccount: "buyer-account", sellerAccount: "seller-account",
+    resource: "XTM", amount: 1000, deadlineEpoch: 100, epoch,
+  });
+  logEl.innerHTML = "";
+  log(`Trade created at epoch ${epoch}: buyer locks 1,000 XTM, deadline epoch 100. Event: TradeCreated`, "ok");
+  render();
+}
+
+const ACTIONS = {
+  fund:    (actor) => trade.fund({ signer: actor, resource: "XTM", amount: 1000 }),
+  release: (actor) => trade.release({ signer: actor }),
+  refund:  (actor) => trade.refund({ signer: actor }),
+  timeout: (actor) => trade.claimTimeoutRefund({ signer: actor, epoch: Number($("epoch").value) || 0 }),
+  dispute: (actor) => trade.dispute({ signer: actor }),
+  resolveSeller: (actor) => trade.resolve({ signer: actor, toSeller: true }),
+  resolveBuyer:  (actor) => trade.resolve({ signer: actor, toSeller: false }),
+};
+const METHOD = {
+  fund: "fund(bucket)", release: "release()", refund: "refund()",
+  timeout: "claim_timeout_refund()", dispute: "dispute()",
+  resolveSeller: "resolve(true)", resolveBuyer: "resolve(false)",
+};
+
+document.querySelectorAll("button[data-act]").forEach((btn) => {
+  btn.addEventListener("click", () => {
+    const actor = document.querySelector("input[name=actor]:checked").value;
+    const act = btn.dataset.act;
+    const before = trade.events.length;
+    try {
+      ACTIONS[act](actor);
+      const ev = trade.events.slice(before).map((e) => `event ${e.name}`).join(", ");
+      log(`tx: ${actor} → TradeEscrow.${METHOD[act]}  ✔ accepted (${ev})`, "ok");
+    } catch (e) {
+      if (e instanceof EscrowError) {
+        log(`tx: ${actor} → TradeEscrow.${METHOD[act]}  ✖ REJECTED — ${e.message}`, "err");
+      } else { throw e; }
+    }
+    render();
+  });
+});
+$("reset").addEventListener("click", reset);
+$("epoch").addEventListener("change", () => log(`Epoch control set to ${$("epoch").value} (stands in for chain time).`));
+reset();
+</script>
+</body>
+</html>
